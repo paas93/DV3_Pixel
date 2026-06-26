@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PixelTileConverter</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Tile Palette Image Converter</p>
+      <h1>PixelTileConverter</h1>
+      <p class="lead">이미지를 인게임 타일 팔레트 기준으로 변환하고, 필요한 타일 수량을 자동 집계합니다.</p>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls">
+      <h2>1. 이미지 업로드</h2>
+      <label class="file-drop" for="imageInput">
+        <input id="imageInput" type="file" accept="image/*" />
+        <span>이미지를 선택하거나 드래그하세요</span>
+        <small>PNG, JPG, WEBP 지원</small>
+      </label>
+
+      <h2>2. 캔버스 그리드</h2>
+      <div class="preset-grid" id="presetGrid"></div>
+      <div class="custom-grid">
+        <label>가로 칸 수
+          <input id="gridWidth" type="number" min="1" max="300" value="48" />
+        </label>
+        <label>세로 칸 수
+          <input id="gridHeight" type="number" min="1" max="300" value="48" />
+        </label>
+      </div>
+      <p class="hint">커스텀 비율이 달라도 원본 이미지는 찌그러지지 않고 같은 비율로 축소됩니다.</p>
+
+      <h2>3. 표시 옵션</h2>
+      <label class="check-row"><input id="showGrid" type="checkbox" checked /> 그리드 라인 표시</label>
+      <label class="check-row"><input id="showLabels" type="checkbox" /> 타일명 약어 표시</label>
+      <label class="check-row"><input id="dither" type="checkbox" /> 디더링 적용</label>
+      <label class="check-row"><input id="showOnlyUsed" type="checkbox" checked /> 사용된 색상만 보기</label>
+      <label class="check-row"><input id="sortByUsage" type="checkbox" checked /> 사용량 많은 순 정렬</label>
+
+      <h2>4. 보기 조작</h2>
+      <div class="zoom-row">
+        <button id="zoomOutBtn" type="button">-</button>
+        <span id="zoomText">100%</span>
+        <button id="zoomInBtn" type="button">+</button>
+        <button id="resetViewBtn" type="button">초기화</button>
+      </div>
+      <p class="hint">마우스 휠로 확대/축소, 드래그로 이동할 수 있습니다.</p>
+
+      <div class="actions">
+        <button id="convertBtn" class="primary" disabled>변환하기</button>
+        <button id="downloadPngBtn" disabled>PNG 다운로드</button>
+        <button id="downloadCsvBtn" disabled>타일맵 CSV 다운로드</button>
+        <button id="downloadUsageCsvBtn" disabled>수량 CSV 다운로드</button>
+        <button id="downloadExcelBtn" disabled>수량 Excel 다운로드</button>
+        <button id="copyUsageBtn" disabled>수량 목록 복사</button>
+      </div>
+    </section>
+
+    <section class="panel preview-panel">
+      <div class="preview-head">
+        <div>
+          <h2>변환 결과</h2>
+          <p id="statusText">이미지를 업로드하면 결과가 표시됩니다.</p>
+        </div>
+        <div id="hoverInfo" class="hover-info">타일명: -</div>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="outputCanvas"></canvas>
+      </div>
+    </section>
+
+    <aside class="panel usage-panel">
+      <div class="usage-head">
+        <div>
+          <h2>사용 타일 리스트</h2>
+          <p id="usageSummary">총 타일 0개 · 사용 색상 0개</p>
+        </div>
+        <input id="usageSearch" type="search" placeholder="색상명 검색" />
+      </div>
+      <div class="usage-note">색상을 클릭하면 변환 이미지에서 해당 색상만 하이라이트됩니다.</div>
+      <div id="usageList" class="usage-list"></div>
+    </aside>
+  </main>
+
+  <template id="usageItemTemplate">
+    <button class="usage-item" type="button">
+      <span class="swatch"></span>
+      <span class="usage-name"></span>
+      <span class="usage-hex"></span>
+      <strong class="usage-count"></strong>
+    </button>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
