@@ -18,6 +18,9 @@ const imageInput = document.getElementById('imageInput');
 const convertBtn = document.getElementById('convertBtn');
 const downloadPngBtn = document.getElementById('downloadPngBtn');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+const downloadUsageCsvBtn = document.getElementById('downloadUsageCsvBtn');
+const downloadExcelBtn = document.getElementById('downloadExcelBtn');
+const copyUsageBtn = document.getElementById('copyUsageBtn');
 const outputCanvas = document.getElementById('outputCanvas');
 const ctx = outputCanvas.getContext('2d');
 const gridWidthInput = document.getElementById('gridWidth');
@@ -25,23 +28,30 @@ const gridHeightInput = document.getElementById('gridHeight');
 const showGridInput = document.getElementById('showGrid');
 const showLabelsInput = document.getElementById('showLabels');
 const ditherInput = document.getElementById('dither');
+const showOnlyUsedInput = document.getElementById('showOnlyUsed');
+const sortByUsageInput = document.getElementById('sortByUsage');
 const statusText = document.getElementById('statusText');
 const hoverInfo = document.getElementById('hoverInfo');
 const presetGrid = document.getElementById('presetGrid');
-const legend = document.getElementById('legend');
 const fileDrop = document.querySelector('.file-drop');
+const canvasWrap = document.getElementById('canvasWrap');
+const usageList = document.getElementById('usageList');
+const usageSummary = document.getElementById('usageSummary');
+const usageSearch = document.getElementById('usageSearch');
+const zoomText = document.getElementById('zoomText');
 
 let sourceImage = null;
 let convertedTiles = [];
 let cellSize = 12;
+let usageRows = [];
+let activeHighlight = null;
+let zoom = 1;
+let isDragging = false;
+let dragStart = { x: 0, y: 0, left: 0, top: 0 };
 
 function hexToRgb(hex) {
   const value = hex.replace('#', '');
-  return {
-    r: parseInt(value.slice(0, 2), 16),
-    g: parseInt(value.slice(2, 4), 16),
-    b: parseInt(value.slice(4, 6), 16)
-  };
+  return { r: parseInt(value.slice(0, 2), 16), g: parseInt(value.slice(2, 4), 16), b: parseInt(value.slice(4, 6), 16) };
 }
 function colorDistance(a, b) {
   const dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
@@ -56,7 +66,6 @@ function nearestTile(rgb) {
   }
   return best;
 }
-
 function initPresets() {
   PRESETS.forEach(([w, h]) => {
     const btn = document.createElement('button');
@@ -72,32 +81,18 @@ function initPresets() {
     presetGrid.appendChild(btn);
   });
 }
-
-function renderLegend() {
-  const template = document.getElementById('legendItemTemplate');
-  TILE_PALETTE.forEach(tile => {
-    const node = template.content.cloneNode(true);
-    const item = node.querySelector('.legend-item');
-    node.querySelector('.swatch').style.background = tile.hex;
-    node.querySelector('.legend-name').textContent = tile.name;
-    node.querySelector('.legend-hex').textContent = tile.hex.toUpperCase();
-    item.title = `${tile.name} ${tile.hex}`;
-    legend.appendChild(node);
-  });
-}
-
 function loadFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
   const img = new Image();
   img.onload = () => {
     sourceImage = img;
     convertBtn.disabled = false;
+    activeHighlight = null;
     statusText.textContent = `${file.name} 업로드 완료 · ${img.width}×${img.height}px`;
     convertImage();
   };
   img.src = URL.createObjectURL(file);
 }
-
 function convertImage() {
   if (!sourceImage) return;
   const width = clamp(parseInt(gridWidthInput.value, 10) || 48, 1, 300);
@@ -111,10 +106,6 @@ function convertImage() {
   sampleCanvas.height = height;
   const sctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
   sctx.imageSmoothingEnabled = true;
-
-  // 원본 이미지를 커스텀 그리드 안에 'contain' 방식으로 배치합니다.
-  // 가로/세로 비율이 다른 그리드를 선택해도 이미지는 찌그러지지 않고,
-  // 남는 칸은 빈 칸으로 남겨 타일 변환/CSV에서 구분되도록 처리합니다.
   const fit = getContainRect(sourceImage.width, sourceImage.height, width, height);
   sctx.clearRect(0, 0, width, height);
   sctx.drawImage(sourceImage, fit.x, fit.y, fit.w, fit.h);
@@ -123,6 +114,28 @@ function convertImage() {
   convertedTiles = Array.from({ length: height }, () => Array(width));
   if (ditherInput.checked) applyDither(data, width, height);
 
+  const usage = new Map();
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const alpha = data.data[i + 3];
+      if (alpha < 10) { convertedTiles[y][x] = null; continue; }
+      const tile = nearestTile({ r: data.data[i], g: data.data[i + 1], b: data.data[i + 2] });
+      convertedTiles[y][x] = tile;
+      usage.set(tile.name, (usage.get(tile.name) || 0) + 1);
+    }
+  }
+  usageRows = TILE_PALETTE.map(tile => ({ ...tile, count: usage.get(tile.name) || 0 }));
+  activeHighlight = null;
+  drawOutput();
+  renderUsageList();
+  setDownloadState(true);
+  statusText.textContent = `변환 완료 · ${width}×${height} 그리드 · 사용 색상 ${usageRows.filter(r => r.count > 0).length}개`;
+}
+function drawOutput() {
+  if (!convertedTiles.length) return;
+  const height = convertedTiles.length;
+  const width = convertedTiles[0].length;
   outputCanvas.width = width * cellSize;
   outputCanvas.height = height * cellSize;
   ctx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
@@ -130,39 +143,63 @@ function convertImage() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  const usage = new Map();
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      const alpha = data.data[i + 3];
-      if (alpha < 10) {
-        convertedTiles[y][x] = null;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
-        continue;
-      }
-      const tile = nearestTile({ r: data.data[i], g: data.data[i + 1], b: data.data[i + 2] });
-      convertedTiles[y][x] = tile;
-      usage.set(tile.name, (usage.get(tile.name) || 0) + 1);
-      ctx.fillStyle = tile.hex;
+      const tile = convertedTiles[y][x];
+      ctx.fillStyle = tile ? tile.hex : '#ffffff';
       ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
-      if (showLabelsInput.checked && cellSize >= 12) {
+      if (activeHighlight && (!tile || tile.name !== activeHighlight)) {
+        ctx.fillStyle = 'rgba(255,255,255,.72)';
+        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+      }
+      if (tile && showLabelsInput.checked && cellSize >= 12) {
         ctx.fillStyle = luminance(tile.rgb) > 155 ? 'rgba(0,0,0,.62)' : 'rgba(255,255,255,.78)';
         ctx.fillText(tile.name.replace(' 타일', '').slice(0, 2), x * cellSize + cellSize / 2, y * cellSize + cellSize / 2);
       }
     }
   }
   if (showGridInput.checked && cellSize >= 6) drawGrid(width, height);
-  downloadPngBtn.disabled = false;
-  downloadCsvBtn.disabled = false;
-  statusText.textContent = `변환 완료 · ${width}×${height} 그리드 · 사용 색상 ${usage.size}개`;
+  applyZoom();
 }
+function renderUsageList() {
+  const query = usageSearch.value.trim().toLowerCase();
+  let rows = [...usageRows];
+  if (showOnlyUsedInput.checked) rows = rows.filter(row => row.count > 0);
+  if (query) rows = rows.filter(row => row.name.toLowerCase().includes(query) || row.hex.toLowerCase().includes(query));
+  if (sortByUsageInput.checked) rows.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ko'));
+  else rows.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
 
+  usageList.innerHTML = '';
+  const template = document.getElementById('usageItemTemplate');
+  rows.forEach(row => {
+    const node = template.content.cloneNode(true);
+    const item = node.querySelector('.usage-item');
+    item.dataset.name = row.name;
+    if (activeHighlight === row.name) item.classList.add('active');
+    node.querySelector('.swatch').style.background = row.hex;
+    node.querySelector('.usage-name').textContent = row.name;
+    node.querySelector('.usage-hex').textContent = row.hex.toUpperCase();
+    node.querySelector('.usage-count').textContent = `${row.count.toLocaleString()}개`;
+    item.addEventListener('click', () => {
+      activeHighlight = activeHighlight === row.name ? null : row.name;
+      drawOutput();
+      renderUsageList();
+    });
+    usageList.appendChild(node);
+  });
+  const used = usageRows.filter(row => row.count > 0);
+  const total = used.reduce((sum, row) => sum + row.count, 0);
+  usageSummary.textContent = `총 타일 ${total.toLocaleString()}개 · 사용 색상 ${used.length.toLocaleString()}개`;
+}
+function setDownloadState(enabled) {
+  [downloadPngBtn, downloadCsvBtn, downloadUsageCsvBtn, downloadExcelBtn, copyUsageBtn].forEach(btn => btn.disabled = !enabled);
+}
 function applyDither(imageData, width, height) {
   const d = imageData.data;
   const addError = (x, y, er, eg, eb, factor) => {
     if (x < 0 || x >= width || y < 0 || y >= height) return;
     const i = (y * width + x) * 4;
+    if (d[i + 3] < 10) return;
     d[i] = clamp(d[i] + er * factor, 0, 255);
     d[i + 1] = clamp(d[i + 1] + eg * factor, 0, 255);
     d[i + 2] = clamp(d[i + 2] + eb * factor, 0, 255);
@@ -170,6 +207,7 @@ function applyDither(imageData, width, height) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
+      if (d[i + 3] < 10) continue;
       const old = { r: d[i], g: d[i + 1], b: d[i + 2] };
       const tile = nearestTile(old);
       const er = old.r - tile.rgb.r, eg = old.g - tile.rgb.g, eb = old.b - tile.rgb.b;
@@ -181,71 +219,116 @@ function applyDither(imageData, width, height) {
     }
   }
 }
-
 function drawGrid(width, height) {
   ctx.strokeStyle = 'rgba(0,0,0,.16)';
   ctx.lineWidth = 1;
-  for (let x = 0; x <= width; x++) {
-    ctx.beginPath(); ctx.moveTo(x * cellSize + .5, 0); ctx.lineTo(x * cellSize + .5, height * cellSize); ctx.stroke();
-  }
-  for (let y = 0; y <= height; y++) {
-    ctx.beginPath(); ctx.moveTo(0, y * cellSize + .5); ctx.lineTo(width * cellSize, y * cellSize + .5); ctx.stroke();
-  }
+  for (let x = 0; x <= width; x++) { ctx.beginPath(); ctx.moveTo(x * cellSize + .5, 0); ctx.lineTo(x * cellSize + .5, height * cellSize); ctx.stroke(); }
+  for (let y = 0; y <= height; y++) { ctx.beginPath(); ctx.moveTo(0, y * cellSize + .5); ctx.lineTo(width * cellSize, y * cellSize + .5); ctx.stroke(); }
 }
 function getContainRect(srcW, srcH, destW, destH) {
   const scale = Math.min(destW / srcW, destH / srcH);
   const w = Math.max(1, Math.round(srcW * scale));
   const h = Math.max(1, Math.round(srcH * scale));
-  return {
-    x: Math.floor((destW - w) / 2),
-    y: Math.floor((destH - h) / 2),
-    w,
-    h
-  };
+  return { x: Math.floor((destW - w) / 2), y: Math.floor((destH - h) / 2), w, h };
 }
 function luminance(rgb) { return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b; }
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-
+function downloadBlob(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.download = filename;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 function downloadPng() {
+  const previousHighlight = activeHighlight;
+  activeHighlight = null;
+  drawOutput();
   const a = document.createElement('a');
   a.download = `pixel-tile-${gridWidthInput.value}x${gridHeightInput.value}.png`;
   a.href = outputCanvas.toDataURL('image/png');
   a.click();
+  activeHighlight = previousHighlight;
+  drawOutput();
 }
-function downloadCsv() {
+function downloadMapCsv() {
   if (!convertedTiles.length) return;
   const rows = convertedTiles.map(row => row.map(tile => tile ? `"${tile.name}"` : '"빈 칸"').join(','));
-  const blob = new Blob(['\ufeff' + rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const a = document.createElement('a');
-  a.download = `pixel-tile-map-${gridWidthInput.value}x${gridHeightInput.value}.csv`;
-  a.href = URL.createObjectURL(blob);
-  a.click();
+  downloadBlob(`pixel-tile-map-${gridWidthInput.value}x${gridHeightInput.value}.csv`, '\ufeff' + rows.join('\n'), 'text/csv;charset=utf-8;');
 }
+function usageCsvContent() {
+  const rows = ['색상명,HEX,개수'];
+  usageRows.filter(row => row.count > 0).sort((a,b) => b.count - a.count).forEach(row => {
+    rows.push(`"${row.name}",${row.hex},${row.count}`);
+  });
+  return '\ufeff' + rows.join('\n');
+}
+function downloadUsageCsv() {
+  downloadBlob(`pixel-tile-usage-${gridWidthInput.value}x${gridHeightInput.value}.csv`, usageCsvContent(), 'text/csv;charset=utf-8;');
+}
+function downloadExcel() {
+  const rows = usageRows.filter(row => row.count > 0).sort((a,b) => b.count - a.count);
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  const html = `\ufeff<html><head><meta charset="UTF-8"></head><body><table border="1"><tr><th>색상명</th><th>HEX</th><th>개수</th></tr>${rows.map(row => `<tr><td>${escapeHtml(row.name)}</td><td>${row.hex}</td><td>${row.count}</td></tr>`).join('')}<tr><td colspan="2">총 타일</td><td>${total}</td></tr></table></body></html>`;
+  downloadBlob(`pixel-tile-usage-${gridWidthInput.value}x${gridHeightInput.value}.xls`, html, 'application/vnd.ms-excel;charset=utf-8;');
+}
+async function copyUsage() {
+  const text = usageRows.filter(row => row.count > 0).sort((a,b) => b.count - a.count).map(row => `${row.name} ${row.count.toLocaleString()}개`).join('\n');
+  await navigator.clipboard.writeText(text);
+  copyUsageBtn.textContent = '복사 완료';
+  setTimeout(() => copyUsageBtn.textContent = '수량 목록 복사', 1200);
+}
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[s]));
+}
+function applyZoom() {
+  outputCanvas.style.transform = `scale(${zoom})`;
+  outputCanvas.style.marginRight = `${outputCanvas.width * (zoom - 1)}px`;
+  outputCanvas.style.marginBottom = `${outputCanvas.height * (zoom - 1)}px`;
+  zoomText.textContent = `${Math.round(zoom * 100)}%`;
+}
+function setZoom(next) { zoom = clamp(next, 0.5, 8); applyZoom(); }
 
 outputCanvas.addEventListener('mousemove', (event) => {
   if (!convertedTiles.length) return;
   const rect = outputCanvas.getBoundingClientRect();
-  const scaleX = outputCanvas.width / rect.width;
-  const scaleY = outputCanvas.height / rect.height;
-  const x = Math.floor(((event.clientX - rect.left) * scaleX) / cellSize);
-  const y = Math.floor(((event.clientY - rect.top) * scaleY) / cellSize);
+  const x = Math.floor(((event.clientX - rect.left) / rect.width) * outputCanvas.width / cellSize);
+  const y = Math.floor(((event.clientY - rect.top) / rect.height) * outputCanvas.height / cellSize);
   const tile = convertedTiles[y]?.[x];
-  if (tile) {
-    hoverInfo.textContent = `타일명: ${tile.name} · ${tile.hex.toUpperCase()} · 좌표 ${x + 1},${y + 1}`;
-  } else if (x >= 0 && y >= 0 && y < convertedTiles.length && x < convertedTiles[0].length) {
-    hoverInfo.textContent = `빈 칸 · 좌표 ${x + 1},${y + 1}`;
-  }
+  if (tile) hoverInfo.textContent = `타일명: ${tile.name} · ${tile.hex.toUpperCase()} · 좌표 ${x + 1},${y + 1}`;
+  else if (x >= 0 && y >= 0 && y < convertedTiles.length && x < convertedTiles[0].length) hoverInfo.textContent = `빈 칸 · 좌표 ${x + 1},${y + 1}`;
 });
 outputCanvas.addEventListener('mouseleave', () => hoverInfo.textContent = '타일명: -');
+canvasWrap.addEventListener('wheel', (event) => { event.preventDefault(); setZoom(zoom + (event.deltaY < 0 ? 0.15 : -0.15)); }, { passive: false });
+canvasWrap.addEventListener('mousedown', (event) => {
+  isDragging = true;
+  canvasWrap.classList.add('dragging');
+  dragStart = { x: event.clientX, y: event.clientY, left: canvasWrap.scrollLeft, top: canvasWrap.scrollTop };
+});
+window.addEventListener('mousemove', (event) => {
+  if (!isDragging) return;
+  canvasWrap.scrollLeft = dragStart.left - (event.clientX - dragStart.x);
+  canvasWrap.scrollTop = dragStart.top - (event.clientY - dragStart.y);
+});
+window.addEventListener('mouseup', () => { isDragging = false; canvasWrap.classList.remove('dragging'); });
 
 imageInput.addEventListener('change', e => loadFile(e.target.files[0]));
 convertBtn.addEventListener('click', convertImage);
 downloadPngBtn.addEventListener('click', downloadPng);
-downloadCsvBtn.addEventListener('click', downloadCsv);
+downloadCsvBtn.addEventListener('click', downloadMapCsv);
+downloadUsageCsvBtn.addEventListener('click', downloadUsageCsv);
+downloadExcelBtn.addEventListener('click', downloadExcel);
+copyUsageBtn.addEventListener('click', copyUsage);
+document.getElementById('zoomOutBtn').addEventListener('click', () => setZoom(zoom - 0.25));
+document.getElementById('zoomInBtn').addEventListener('click', () => setZoom(zoom + 0.25));
+document.getElementById('resetViewBtn').addEventListener('click', () => { setZoom(1); canvasWrap.scrollLeft = 0; canvasWrap.scrollTop = 0; });
 [gridWidthInput, gridHeightInput, showGridInput, showLabelsInput, ditherInput].forEach(el => el.addEventListener('change', () => sourceImage && convertImage()));
+[showOnlyUsedInput, sortByUsageInput, usageSearch].forEach(el => el.addEventListener('input', renderUsageList));
 ['dragenter', 'dragover'].forEach(type => fileDrop.addEventListener(type, e => { e.preventDefault(); fileDrop.classList.add('dragover'); }));
 ['dragleave', 'drop'].forEach(type => fileDrop.addEventListener(type, e => { e.preventDefault(); fileDrop.classList.remove('dragover'); }));
 fileDrop.addEventListener('drop', e => loadFile(e.dataTransfer.files[0]));
 
 initPresets();
-renderLegend();
+renderUsageList();
+setDownloadState(false);
